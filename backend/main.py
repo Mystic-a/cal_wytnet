@@ -160,14 +160,17 @@ app = FastAPI(title="Calculator API", version="1.0.0")
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
-    same_site="lax",  # Allow cross-site cookies for OAuth redirect
-    https_only=False  # Set to True in production with HTTPS
+    same_site="none" if "https" in FRONTEND_URL else "lax",  # "none" for cross-site in production
+    https_only="https" in FRONTEND_URL  # True only in production with HTTPS
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=[
+        "http://localhost:3000",  # Local development
+        "https://calculator-frontend-ley2.onrender.com"  # Production
+    ], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
