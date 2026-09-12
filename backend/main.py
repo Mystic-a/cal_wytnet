@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String
+from fastapi.responses import RedirectResponse
+from sqlalchemy import create_engine, Column, Integer, String, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
@@ -10,12 +11,20 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 import os
+import secrets
+from authlib.integrations.starlette_client import OAuth
+from starlette.middleware.sessions import SessionMiddleware
 
 # Configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./calculator.db")
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Handle Render PostgreSQL URL format
 if DATABASE_URL.startswith("postgres://"):
@@ -37,7 +46,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)  # Nullable for OAuth users
+    google_id = Column(String, unique=True, nullable=True, index=True)
+    is_oauth_user = Column(Boolean, default=False)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -81,6 +92,9 @@ class EBBillRequest(BaseModel):
 # FastAPI app
 app = FastAPI(title="Calculator API", version="1.0.0")
 
+# Session middleware (required for OAuth)
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -89,6 +103,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# OAuth setup
+oauth = OAuth()
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    oauth.register(
+        name='google',
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={'scope': 'openid email profile'},
+    )
 
 # Dependency
 def get_db():
@@ -120,6 +145,23 @@ def get_user_by_username(db: Session, username: str):
 
 def get_user_by_email(db: Session, email: str):
     return db.query(User).filter(User.email == email).first()
+
+def get_user_by_google_id(db: Session, google_id: str):
+    return db.query(User).filter(User.google_id == google_id).first()
+
+def create_oauth_user(db: Session, email: str, username: str, google_id: str):
+    """Create a user from OAuth login"""
+    db_user = User(
+        email=email,
+        username=username,
+        google_id=google_id,
+        is_oauth_user=True,
+        hashed_password=None
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -183,6 +225,72 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 @app.get("/users/me", response_model=UserResponse)
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+# Google OAuth Routes
+@app.get("/auth/google/login")
+async def google_login(request):
+    """Initiate Google OAuth login"""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    redirect_uri = request.url_for('google_callback')
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+@app.get("/auth/google/callback")
+async def google_callback(request, db: Session = Depends(get_db)):
+    """Handle Google OAuth callback"""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    try:
+        # Get the token from Google
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get('userinfo')
+        
+        if not user_info:
+            raise HTTPException(status_code=400, detail="Failed to get user info from Google")
+        
+        google_id = user_info.get('sub')
+        email = user_info.get('email')
+        name = user_info.get('name', email.split('@')[0])
+        
+        # Check if user exists by google_id
+        user = get_user_by_google_id(db, google_id)
+        
+        if not user:
+            # Check if user exists by email (linking accounts)
+            user = get_user_by_email(db, email)
+            
+            if user:
+                # Link existing account with Google
+                user.google_id = google_id
+                user.is_oauth_user = True
+                db.commit()
+                db.refresh(user)
+            else:
+                # Create new user
+                # Generate unique username from email
+                base_username = email.split('@')[0]
+                username = base_username
+                counter = 1
+                while get_user_by_username(db, username):
+                    username = f"{base_username}{counter}"
+                    counter += 1
+                
+                user = create_oauth_user(db, email, username, google_id)
+        
+        # Create JWT token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username}, expires_delta=access_token_expires
+        )
+        
+        # Redirect to frontend with token
+        return RedirectResponse(url=f"{FRONTEND_URL}/auth/callback?token={access_token}")
+        
+    except Exception as e:
+        print(f"OAuth error: {str(e)}")
+        return RedirectResponse(url=f"{FRONTEND_URL}/login?error=oauth_failed")
 
 # Calculator endpoints (protected)
 @app.post("/calculate/bmi")

@@ -34,6 +34,10 @@ export const getCurrentUser = async () => {
   return response.data;
 };
 
+export const googleLoginUrl = () => {
+  return `${API_BASE_URL}/auth/google/login`;
+};
+
 export const calculateBMI = async (weight, height) => {
   const response = await api.post('/calculate/bmi', { weight, height });
   return response.data;
