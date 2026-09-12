@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, text
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -60,6 +60,53 @@ class User(Base):
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+# Migration: Add OAuth columns if they don't exist
+def migrate_database():
+    """Add OAuth columns to existing users table"""
+    try:
+        with engine.connect() as conn:
+            # Check if we're using PostgreSQL or SQLite
+            if "postgresql" in str(engine.url):
+                # PostgreSQL syntax
+                conn.execute(text("""
+                    ALTER TABLE users 
+                    ADD COLUMN IF NOT EXISTS google_id VARCHAR;
+                """))
+                conn.execute(text("""
+                    ALTER TABLE users 
+                    ADD COLUMN IF NOT EXISTS is_oauth_user BOOLEAN DEFAULT FALSE;
+                """))
+                conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id 
+                    ON users (google_id);
+                """))
+            else:
+                # SQLite syntax - need to check if column exists first
+                result = conn.execute(text("PRAGMA table_info(users)"))
+                columns = [row[1] for row in result]
+                
+                if 'google_id' not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN google_id VARCHAR"))
+                if 'is_oauth_user' not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_oauth_user BOOLEAN DEFAULT 0"))
+                
+                # SQLite unique index
+                try:
+                    conn.execute(text("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id 
+                        ON users (google_id)
+                    """))
+                except:
+                    pass  # Index might already exist
+            
+            conn.commit()
+            print("✅ Database migration completed successfully")
+    except Exception as e:
+        print(f"⚠️  Database migration note: {e}")
+
+# Run migration
+migrate_database()
 
 # Pydantic Models
 class UserCreate(BaseModel):
