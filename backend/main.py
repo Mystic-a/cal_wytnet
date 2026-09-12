@@ -1,8 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
@@ -11,20 +10,12 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 import os
-import httpx
 
 # Configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./calculator.db")
-
-# WytPass OAuth Configuration
-WYTPASS_CLIENT_ID = os.getenv("WYTPASS_CLIENT_ID", "wp_e48c48109ebebe4ea9d0")
-WYTPASS_CLIENT_SECRET = os.getenv("WYTPASS_CLIENT_SECRET", "")
-WYTPASS_TOKEN_URL = "https://api.wytnet.com/oauth/token"
-WYTPASS_USER_INFO_URL = "https://api.wytnet.com/oauth/userinfo"
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Handle Render PostgreSQL URL format
 if DATABASE_URL.startswith("postgres://"):
@@ -46,9 +37,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=True)  # Nullable for OAuth users
-    wytpass_id = Column(String, unique=True, nullable=True, index=True)
-    is_oauth_user = Column(Boolean, default=False)
+    hashed_password = Column(String, nullable=False)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -73,10 +62,6 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
-
-class WytPassTokenRequest(BaseModel):
-    code: str
-    code_verifier: str
 
 class BMIRequest(BaseModel):
     weight: float  # in kg
@@ -135,23 +120,6 @@ def get_user_by_username(db: Session, username: str):
 
 def get_user_by_email(db: Session, email: str):
     return db.query(User).filter(User.email == email).first()
-
-def get_user_by_wytpass_id(db: Session, wytpass_id: str):
-    return db.query(User).filter(User.wytpass_id == wytpass_id).first()
-
-def create_oauth_user(db: Session, email: str, username: str, wytpass_id: str):
-    """Create a user from OAuth login"""
-    db_user = User(
-        email=email,
-        username=username,
-        wytpass_id=wytpass_id,
-        is_oauth_user=True,
-        hashed_password=None
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -215,106 +183,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 @app.get("/users/me", response_model=UserResponse)
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
-
-# WytPass OAuth Endpoint
-@app.post("/auth/wytpass/token")
-async def wytpass_token(token_request: WytPassTokenRequest, db: Session = Depends(get_db)):
-    """Exchange WytPass authorization code for access token and create/login user"""
-    try:
-        # Exchange authorization code for access token
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                WYTPASS_TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": token_request.code,
-                    "client_id": WYTPASS_CLIENT_ID,
-                    "code_verifier": token_request.code_verifier,
-                    "redirect_uri": f"{FRONTEND_URL}/auth/callback"
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            )
-            
-            if token_response.status_code != 200:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Failed to get access token: {token_response.text}"
-                )
-            
-            token_data = token_response.json()
-            access_token = token_data.get("access_token")
-            
-            if not access_token:
-                raise HTTPException(status_code=400, detail="No access token received")
-            
-            # Get user info from WytPass
-            user_info_response = await client.get(
-                WYTPASS_USER_INFO_URL,
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            
-            if user_info_response.status_code != 200:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Failed to get user info: {user_info_response.text}"
-                )
-            
-            user_info = user_info_response.json()
-            
-            # Extract user information
-            wytpass_id = user_info.get("sub") or user_info.get("id")
-            email = user_info.get("email")
-            name = user_info.get("name") or user_info.get("username") or email.split('@')[0] if email else "user"
-            
-            if not wytpass_id or not email:
-                raise HTTPException(status_code=400, detail="Incomplete user info from WytPass")
-            
-            # Check if user exists by wytpass_id
-            user = get_user_by_wytpass_id(db, wytpass_id)
-            
-            if not user:
-                # Check if user exists by email (linking accounts)
-                user = get_user_by_email(db, email)
-                
-                if user:
-                    # Link existing account with WytPass
-                    user.wytpass_id = wytpass_id
-                    user.is_oauth_user = True
-                    db.commit()
-                    db.refresh(user)
-                else:
-                    # Create new user
-                    # Generate unique username
-                    base_username = name.replace(" ", "_").lower()
-                    username = base_username
-                    counter = 1
-                    while get_user_by_username(db, username):
-                        username = f"{base_username}{counter}"
-                        counter += 1
-                    
-                    user = create_oauth_user(db, email, username, wytpass_id)
-            
-            # Create JWT token for our app
-            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-            jwt_token = create_access_token(
-                data={"sub": user.username}, expires_delta=access_token_expires
-            )
-            
-            return {
-                "access_token": jwt_token,
-                "token_type": "bearer",
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "username": user.username
-                }
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"WytPass OAuth error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"OAuth failed: {str(e)}")
 
 # Calculator endpoints (protected)
 @app.post("/calculate/bmi")

@@ -34,54 +34,6 @@ export const getCurrentUser = async () => {
   return response.data;
 };
 
-// WytPass OAuth Configuration
-const WYTPASS_CLIENT_ID = 'wp_e48c48109ebebe4ea9d0';
-const WYTPASS_AUTHORIZE_URL = 'https://wytnet.com/oauth/authorize';
-
-export const initiateWytPassLogin = () => {
-  // Generate PKCE verifier
-  const verifier = crypto.randomUUID() + crypto.randomUUID();
-  localStorage.setItem('pkce_verifier', verifier);
-  
-  // Create code challenge
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  crypto.subtle.digest('SHA-256', data).then(hash => {
-    const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-    
-    // Redirect to WytPass
-    const redirectUri = `${window.location.origin}/auth/callback`;
-    const params = new URLSearchParams({
-      client_id: WYTPASS_CLIENT_ID,
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      scope: 'openid email profile',
-      code_challenge: challenge,
-      code_challenge_method: 'S256'
-    });
-    
-    window.location.href = `${WYTPASS_AUTHORIZE_URL}?${params.toString()}`;
-  });
-};
-
-export const exchangeWytPassCode = async (code) => {
-  const verifier = localStorage.getItem('pkce_verifier');
-  if (!verifier) {
-    throw new Error('PKCE verifier not found');
-  }
-  
-  const response = await api.post('/auth/wytpass/token', {
-    code,
-    code_verifier: verifier
-  });
-  
-  localStorage.removeItem('pkce_verifier');
-  return response.data;
-};
-
 export const calculateBMI = async (weight, height) => {
   const response = await api.post('/calculate/bmi', { weight, height });
   return response.data;

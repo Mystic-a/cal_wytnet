@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { login, initiateWytPassLogin } from '../api';
+import { login } from '../api';
 
 function Login({ setToken }) {
   const [username, setUsername] = useState('');
@@ -23,10 +23,6 @@ function Login({ setToken }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleWytPassLogin = () => {
-    initiateWytPassLogin();
   };
 
   return (
@@ -58,18 +54,6 @@ function Login({ setToken }) {
           {loading ? 'Logging in...' : 'Login'}
         </button>
       </form>
-      
-      <div className="divider">
-        <span>OR</span>
-      </div>
-      
-      <button onClick={handleWytPassLogin} className="btn btn-wytpass">
-        <svg className="wytpass-icon" viewBox="0 0 24 24" width="20px" height="20px">
-          <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-        </svg>
-        Continue with WytPass
-      </button>
-
       <div className="auth-switch">
         Don't have an account? <Link to="/signup">Sign up</Link>
       </div>
