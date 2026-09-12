@@ -300,31 +300,58 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 
 # Google OAuth Routes
 @app.get("/auth/google/login")
-async def google_login(request: Request):
+async def google_login():
     """Initiate Google OAuth login"""
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
-    return await oauth.google.authorize_redirect(
-    request,
-    GOOGLE_REDIRECT_URI
-)
+    # Build Google OAuth URL manually (stateless)
+    google_auth_url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth?"
+        f"client_id={GOOGLE_CLIENT_ID}&"
+        f"redirect_uri={GOOGLE_REDIRECT_URI}&"
+        f"response_type=code&"
+        f"scope=openid%20email%20profile&"
+        f"access_type=offline"
+    )
+    
+    return RedirectResponse(url=google_auth_url)
 
 @app.get("/auth/google/callback")
-async def google_callback(request: Request, db: Session = Depends(get_db)):
+async def google_callback(code: str, state: str = None, db: Session = Depends(get_db)):
     """Handle Google OAuth callback"""
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
     try:
-        # Get the token from Google
-        token = await oauth.google.authorize_access_token(request)
-        user_info = token.get('userinfo')
+        import httpx
+        
+        # Exchange code for token
+        token_url = "https://oauth2.googleapis.com/token"
+        token_data = {
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }
+        
+        async with httpx.AsyncClient() as client:
+            token_response = await client.post(token_url, data=token_data)
+            token_response.raise_for_status()
+            tokens = token_response.json()
+            
+            # Get user info
+            userinfo_url = "https://www.googleapis.com/oauth2/v2/userinfo"
+            headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+            userinfo_response = await client.get(userinfo_url, headers=headers)
+            userinfo_response.raise_for_status()
+            user_info = userinfo_response.json()
         
         if not user_info:
             raise HTTPException(status_code=400, detail="Failed to get user info from Google")
         
-        google_id = user_info.get('sub')
+        google_id = user_info.get('id')
         email = user_info.get('email')
         name = user_info.get('name', email.split('@')[0])
         
@@ -364,6 +391,8 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
         
     except Exception as e:
         print(f"OAuth error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(url=f"{FRONTEND_URL}/login?error=oauth_failed")
 
 # Calculator endpoints (protected)
