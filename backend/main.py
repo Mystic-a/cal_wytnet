@@ -157,7 +157,12 @@ class EBBillRequest(BaseModel):
 app = FastAPI(title="Calculator API", version="1.0.0")
 
 # Session middleware (required for OAuth)
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    same_site="lax",  # Allow cross-site cookies for OAuth redirect
+    https_only=False  # Set to True in production with HTTPS
+)
 
 # CORS middleware
 app.add_middleware(
