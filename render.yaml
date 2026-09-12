@@ -1,0 +1,39 @@
+services:
+  # Backend API Service
+  - type: web
+    name: calculator-backend
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: calculator-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+  # Frontend Service
+  - type: web
+    name: calculator-frontend
+    runtime: static
+    plan: free
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: frontend/build
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://calculator-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+# PostgreSQL Database
+databases:
+  - name: calculator-db
+    plan: free
+    databaseName: calculator
+    user: calculator_user
