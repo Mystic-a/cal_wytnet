@@ -220,10 +220,10 @@
 }
 
 /* Google Login Button */
-.btn-google {
-  background: white !important;
-  color: #444 !important;
-  border: 1px solid #ddd !important;
+.btn-wytpass {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  color: white !important;
+  border: none !important;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -231,12 +231,12 @@
   margin-top: 10px;
 }
 
-.btn-google:hover {
-  background: #f5f5f5 !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+.btn-wytpass:hover {
+  background: linear-gradient(135deg, #5568d3 0%, #6a4291 100%) !important;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
-.google-icon {
+.wytpass-icon {
   width: 20px;
   height: 20px;
 }

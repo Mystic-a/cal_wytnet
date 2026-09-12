@@ -1,19 +1,17 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, text
-from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
+from fastapi.responses import JSONResponse
+from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 import os
-from dotenv import load_dotenv
-load_dotenv()
-from authlib.integrations.starlette_client import OAuth
-from starlette.middleware.sessions import SessionMiddleware
+import httpx
 
 # Configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
@@ -21,14 +19,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./calculator.db")
 
-# Google OAuth Configuration
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+# WytPass OAuth Configuration
+WYTPASS_CLIENT_ID = os.getenv("WYTPASS_CLIENT_ID", "wp_e48c48109ebebe4ea9d0")
+WYTPASS_CLIENT_SECRET = os.getenv("WYTPASS_CLIENT_SECRET", "")
+WYTPASS_TOKEN_URL = "https://api.wytnet.com/oauth/token"
+WYTPASS_USER_INFO_URL = "https://api.wytnet.com/oauth/userinfo"
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-GOOGLE_REDIRECT_URI = os.getenv(
-    "GOOGLE_REDIRECT_URI",
-    "http://localhost:8000/auth/google/callback"
-)
 
 # Handle Render PostgreSQL URL format
 if DATABASE_URL.startswith("postgres://"):
@@ -37,10 +33,7 @@ if DATABASE_URL.startswith("postgres://"):
 # Database setup
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Database Base
-class Base(DeclarativeBase):
-    pass
+Base = declarative_base()
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -54,68 +47,11 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=True)  # Nullable for OAuth users
-    google_id = Column(String, unique=True, nullable=True, index=True)
+    wytpass_id = Column(String, unique=True, nullable=True, index=True)
     is_oauth_user = Column(Boolean, default=False)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
-
-# Migration: Add OAuth columns if they don't exist
-def migrate_database():
-    """Add OAuth columns to existing users table and make hashed_password nullable"""
-    try:
-        with engine.connect() as conn:
-            # Check if we're using PostgreSQL or SQLite
-            if "postgresql" in str(engine.url):
-                # PostgreSQL syntax
-                conn.execute(text("""
-                    ALTER TABLE users 
-                    ADD COLUMN IF NOT EXISTS google_id VARCHAR;
-                """))
-                conn.execute(text("""
-                    ALTER TABLE users 
-                    ADD COLUMN IF NOT EXISTS is_oauth_user BOOLEAN DEFAULT FALSE;
-                """))
-                conn.execute(text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id 
-                    ON users (google_id);
-                """))
-                # Make hashed_password nullable for OAuth users
-                conn.execute(text("""
-                    ALTER TABLE users 
-                    ALTER COLUMN hashed_password DROP NOT NULL;
-                """))
-                print("✅ PostgreSQL migration: hashed_password is now nullable")
-            else:
-                # SQLite syntax - need to check if column exists first
-                result = conn.execute(text("PRAGMA table_info(users)"))
-                columns = [row[1] for row in result]
-                
-                if 'google_id' not in columns:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN google_id VARCHAR"))
-                if 'is_oauth_user' not in columns:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_oauth_user BOOLEAN DEFAULT 0"))
-                
-                # SQLite unique index
-                try:
-                    conn.execute(text("""
-                        CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id 
-                        ON users (google_id)
-                    """))
-                except:
-                    pass  # Index might already exist
-                
-                # Note: SQLite requires table recreation to change column constraints
-                # Since we're using nullable=True in the model, new tables will be correct
-                print("✅ SQLite migration: OAuth columns added")
-            
-            conn.commit()
-            print("✅ Database migration completed successfully")
-    except Exception as e:
-        print(f"⚠️  Database migration note: {e}")
-
-# Run migration
-migrate_database()
 
 # Pydantic Models
 class UserCreate(BaseModel):
@@ -124,11 +60,12 @@ class UserCreate(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    
     id: int
     email: str
     username: str
+    
+    class Config:
+        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -136,6 +73,10 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+class WytPassTokenRequest(BaseModel):
+    code: str
+    code_verifier: str
 
 class BMIRequest(BaseModel):
     weight: float  # in kg
@@ -155,36 +96,14 @@ class EBBillRequest(BaseModel):
 # FastAPI app
 app = FastAPI(title="Calculator API", version="1.0.0")
 
-# Session middleware (required for OAuth)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=SECRET_KEY,
-    same_site="none" if "https" in FRONTEND_URL else "lax",  # "none" for cross-site in production
-    https_only="https" in FRONTEND_URL  # True only in production with HTTPS
-)
-
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Local development
-        "https://calculator-frontend-ley2.onrender.com"  # Production
-    ], 
+    allow_origins=["*"],  # In production, replace with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# OAuth setup
-oauth = OAuth()
-if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
-    oauth.register(
-        name='google',
-        client_id=GOOGLE_CLIENT_ID,
-        client_secret=GOOGLE_CLIENT_SECRET,
-        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-        client_kwargs={'scope': 'openid email profile'},
-    )
 
 # Dependency
 def get_db():
@@ -217,15 +136,15 @@ def get_user_by_username(db: Session, username: str):
 def get_user_by_email(db: Session, email: str):
     return db.query(User).filter(User.email == email).first()
 
-def get_user_by_google_id(db: Session, google_id: str):
-    return db.query(User).filter(User.google_id == google_id).first()
+def get_user_by_wytpass_id(db: Session, wytpass_id: str):
+    return db.query(User).filter(User.wytpass_id == wytpass_id).first()
 
-def create_oauth_user(db: Session, email: str, username: str, google_id: str):
+def create_oauth_user(db: Session, email: str, username: str, wytpass_id: str):
     """Create a user from OAuth login"""
     db_user = User(
         email=email,
         username=username,
-        google_id=google_id,
+        wytpass_id=wytpass_id,
         is_oauth_user=True,
         hashed_password=None
     )
@@ -280,23 +199,7 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = get_user_by_username(db, username=form_data.username)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Check if user is OAuth-only (no password)
-    if user.is_oauth_user and not user.hashed_password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="This account uses Google login. Please sign in with Google.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Verify password
-    if not verify_password(form_data.password, user.hashed_password):
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -313,102 +216,105 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-# Google OAuth Routes
-@app.get("/auth/google/login")
-async def google_login():
-    """Initiate Google OAuth login"""
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="Google OAuth not configured")
-    
-    # Build Google OAuth URL manually (stateless)
-    google_auth_url = (
-        f"https://accounts.google.com/o/oauth2/v2/auth?"
-        f"client_id={GOOGLE_CLIENT_ID}&"
-        f"redirect_uri={GOOGLE_REDIRECT_URI}&"
-        f"response_type=code&"
-        f"scope=openid%20email%20profile&"
-        f"access_type=offline"
-    )
-    
-    return RedirectResponse(url=google_auth_url)
-
-@app.get("/auth/google/callback")
-async def google_callback(code: str, state: str = None, db: Session = Depends(get_db)):
-    """Handle Google OAuth callback"""
-    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="Google OAuth not configured")
-    
+# WytPass OAuth Endpoint
+@app.post("/auth/wytpass/token")
+async def wytpass_token(token_request: WytPassTokenRequest, db: Session = Depends(get_db)):
+    """Exchange WytPass authorization code for access token and create/login user"""
     try:
-        import httpx
-        
-        # Exchange code for token
-        token_url = "https://oauth2.googleapis.com/token"
-        token_data = {
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": GOOGLE_REDIRECT_URI,
-            "grant_type": "authorization_code",
-        }
-        
+        # Exchange authorization code for access token
         async with httpx.AsyncClient() as client:
-            token_response = await client.post(token_url, data=token_data)
-            token_response.raise_for_status()
-            tokens = token_response.json()
+            token_response = await client.post(
+                WYTPASS_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": token_request.code,
+                    "client_id": WYTPASS_CLIENT_ID,
+                    "code_verifier": token_request.code_verifier,
+                    "redirect_uri": f"{FRONTEND_URL}/auth/callback"
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
             
-            # Get user info
-            userinfo_url = "https://www.googleapis.com/oauth2/v2/userinfo"
-            headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-            userinfo_response = await client.get(userinfo_url, headers=headers)
-            userinfo_response.raise_for_status()
-            user_info = userinfo_response.json()
-        
-        if not user_info:
-            raise HTTPException(status_code=400, detail="Failed to get user info from Google")
-        
-        google_id = user_info.get('id')
-        email = user_info.get('email')
-        name = user_info.get('name', email.split('@')[0])
-        
-        # Check if user exists by google_id
-        user = get_user_by_google_id(db, google_id)
-        
-        if not user:
-            # Check if user exists by email (linking accounts)
-            user = get_user_by_email(db, email)
+            if token_response.status_code != 200:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to get access token: {token_response.text}"
+                )
             
-            if user:
-                # Link existing account with Google
-                user.google_id = google_id
-                user.is_oauth_user = True
-                db.commit()
-                db.refresh(user)
-            else:
-                # Create new user
-                # Generate unique username from email
-                base_username = email.split('@')[0]
-                username = base_username
-                counter = 1
-                while get_user_by_username(db, username):
-                    username = f"{base_username}{counter}"
-                    counter += 1
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+            
+            if not access_token:
+                raise HTTPException(status_code=400, detail="No access token received")
+            
+            # Get user info from WytPass
+            user_info_response = await client.get(
+                WYTPASS_USER_INFO_URL,
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            
+            if user_info_response.status_code != 200:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to get user info: {user_info_response.text}"
+                )
+            
+            user_info = user_info_response.json()
+            
+            # Extract user information
+            wytpass_id = user_info.get("sub") or user_info.get("id")
+            email = user_info.get("email")
+            name = user_info.get("name") or user_info.get("username") or email.split('@')[0] if email else "user"
+            
+            if not wytpass_id or not email:
+                raise HTTPException(status_code=400, detail="Incomplete user info from WytPass")
+            
+            # Check if user exists by wytpass_id
+            user = get_user_by_wytpass_id(db, wytpass_id)
+            
+            if not user:
+                # Check if user exists by email (linking accounts)
+                user = get_user_by_email(db, email)
                 
-                user = create_oauth_user(db, email, username, google_id)
-        
-        # Create JWT token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": user.username}, expires_delta=access_token_expires
-        )
-        
-        # Redirect to frontend with token
-        return RedirectResponse(url=f"{FRONTEND_URL}/auth/callback?token={access_token}")
-        
+                if user:
+                    # Link existing account with WytPass
+                    user.wytpass_id = wytpass_id
+                    user.is_oauth_user = True
+                    db.commit()
+                    db.refresh(user)
+                else:
+                    # Create new user
+                    # Generate unique username
+                    base_username = name.replace(" ", "_").lower()
+                    username = base_username
+                    counter = 1
+                    while get_user_by_username(db, username):
+                        username = f"{base_username}{counter}"
+                        counter += 1
+                    
+                    user = create_oauth_user(db, email, username, wytpass_id)
+            
+            # Create JWT token for our app
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            jwt_token = create_access_token(
+                data={"sub": user.username}, expires_delta=access_token_expires
+            )
+            
+            return {
+                "access_token": jwt_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "username": user.username
+                }
+            }
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"OAuth error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return RedirectResponse(url=f"{FRONTEND_URL}/login?error=oauth_failed")
+        print(f"WytPass OAuth error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"OAuth failed: {str(e)}")
 
 # Calculator endpoints (protected)
 @app.post("/calculate/bmi")
