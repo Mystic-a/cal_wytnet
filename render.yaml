@@ -15,6 +15,14 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        value: https://calculator-frontend-ley2.onrender.com
+      - key: GOOGLE_REDIRECT_URI
+        value: https://calculator-backend-z6k9.onrender.com/auth/google/callback
 
   # Frontend Static Site
   - type: web
