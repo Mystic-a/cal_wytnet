@@ -34,6 +34,40 @@ export const getCurrentUser = async () => {
   return response.data;
 };
 
+// WytPass SSO Functions
+export const wytpassLoginUrl = async () => {
+  // Generate PKCE verifier
+  const verifier = crypto.randomUUID() + crypto.randomUUID();
+  localStorage.setItem('pkce_verifier', verifier);
+  
+  // Generate challenge from verifier
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: 'wp_e48c48109ebebe4ea9d0',
+    redirect_uri: `${window.location.origin}/callback`,
+    scope: 'openid profile email',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  
+  return `https://wytnet.com/oauth/authorize?${params}`;
+};
+
+export const exchangeWytpassToken = async (code, verifier) => {
+  const response = await api.post('/auth/wytpass/token', null, {
+    params: { code, code_verifier: verifier }
+  });
+  return response.data;
+};
+
 export const calculateBMI = async (weight, height) => {
   const response = await api.post('/calculate/bmi', { weight, height });
   return response.data;
