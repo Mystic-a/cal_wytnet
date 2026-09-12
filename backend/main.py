@@ -11,6 +11,8 @@ from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional
 import os
 import secrets
+from dotenv import load_dotenv
+load_dotenv()
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -24,6 +26,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./calculator.db")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+GOOGLE_REDIRECT_URI = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "http://localhost:8000/auth/google/callback"
+)
 
 # Handle Render PostgreSQL URL format
 if DATABASE_URL.startswith("postgres://"):
@@ -234,8 +240,10 @@ async def google_login(request: Request):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
-    redirect_uri = request.url_for('google_callback')
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    return await oauth.google.authorize_redirect(
+    request,
+    GOOGLE_REDIRECT_URI
+)
 
 @app.get("/auth/google/callback")
 async def google_callback(request: Request, db: Session = Depends(get_db)):
