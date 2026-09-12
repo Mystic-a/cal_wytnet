@@ -63,7 +63,7 @@ Base.metadata.create_all(bind=engine)
 
 # Migration: Add OAuth columns if they don't exist
 def migrate_database():
-    """Add OAuth columns to existing users table"""
+    """Add OAuth columns to existing users table and make hashed_password nullable"""
     try:
         with engine.connect() as conn:
             # Check if we're using PostgreSQL or SQLite
@@ -81,6 +81,12 @@ def migrate_database():
                     CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id 
                     ON users (google_id);
                 """))
+                # Make hashed_password nullable for OAuth users
+                conn.execute(text("""
+                    ALTER TABLE users 
+                    ALTER COLUMN hashed_password DROP NOT NULL;
+                """))
+                print("✅ PostgreSQL migration: hashed_password is now nullable")
             else:
                 # SQLite syntax - need to check if column exists first
                 result = conn.execute(text("PRAGMA table_info(users)"))
@@ -99,6 +105,10 @@ def migrate_database():
                     """))
                 except:
                     pass  # Index might already exist
+                
+                # Note: SQLite requires table recreation to change column constraints
+                # Since we're using nullable=True in the model, new tables will be correct
+                print("✅ SQLite migration: OAuth columns added")
             
             conn.commit()
             print("✅ Database migration completed successfully")
