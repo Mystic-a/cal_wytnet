@@ -1,14 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from sqlalchemy import create_engine, Column, Integer, String, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional
 import os
 import secrets
@@ -33,7 +32,10 @@ if DATABASE_URL.startswith("postgres://"):
 # Database setup
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+# Database Base
+class Base(DeclarativeBase):
+    pass
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -60,12 +62,11 @@ class UserCreate(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     email: str
     username: str
-    
-    class Config:
-        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -228,7 +229,7 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 
 # Google OAuth Routes
 @app.get("/auth/google/login")
-async def google_login(request):
+async def google_login(request: Request):
     """Initiate Google OAuth login"""
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
@@ -237,7 +238,7 @@ async def google_login(request):
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 @app.get("/auth/google/callback")
-async def google_callback(request, db: Session = Depends(get_db)):
+async def google_callback(request: Request, db: Session = Depends(get_db)):
     """Handle Google OAuth callback"""
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
