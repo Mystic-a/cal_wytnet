@@ -24,7 +24,7 @@ services:
     staticPublishPath: frontend/build
     envVars:
       - key: REACT_APP_API_URL
-        value: https://calculator-backend.onrender.com
+        value: https://calculator-backend-z6k9.onrender.com
     routes:
       - type: rewrite
         source: /*
