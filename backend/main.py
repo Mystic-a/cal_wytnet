@@ -227,7 +227,7 @@ async def wytpass_token_exchange(code: str, code_verifier: str, db: Session = De
                     "client_id": WYTPASS_CLIENT_ID,
                     "client_secret": WYTPASS_CLIENT_SECRET,
                     "code_verifier": code_verifier,
-                    "redirect_uri": f"{FRONTEND_URL}/callback"
+                    "redirect_uri": "https://calculator-frontend-ley2.onrender.com/callback"
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
