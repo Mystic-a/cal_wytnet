@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-d
 import Login from './components/Login';
 import Signup from './components/Signup';
 import Dashboard from './components/Dashboard';
+import AuthCallback from './components/AuthCallback';
 import './App.css';
 
 function App() {
@@ -32,6 +33,10 @@ function App() {
           <Route 
             path="/signup" 
             element={!token ? <Signup setToken={setToken} /> : <Navigate to="/dashboard" />} 
+          />
+          <Route 
+            path="/callback" 
+            element={<AuthCallback setToken={setToken} />} 
           />
           <Route 
             path="/dashboard" 
