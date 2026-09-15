@@ -52,7 +52,7 @@ export const wytpassLoginUrl = async () => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: 'wp_e48c48109ebebe4ea9d0',
-    redirect_uri: `${window.location.origin}/callback`,
+    redirect_uri: 'https://wytnet.com/callback',
     scope: 'openid profile email',
     code_challenge: challenge,
     code_challenge_method: 'S256',
