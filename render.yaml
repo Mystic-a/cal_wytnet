@@ -4,8 +4,8 @@ services:
     name: calculator-backend
     runtime: python
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt && cd backend && python migrate_db.py"
-    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && python migrate_db.py && uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: SECRET_KEY
         generateValue: true
